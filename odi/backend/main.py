@@ -19,4 +19,7 @@ def root():
 
 @app.get("/hello")
 def hello():
-    return {"message": "Hello from Python FastAPI!"}
+    return {"message": "kanye west is the goat!"
+                       "kanye west is the goat!"
+                       "kanye west is the goat!"
+                       "kanye west is the goat!"}

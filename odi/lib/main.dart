@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'screens/chat_screen.dart';
 
 void main() {
   runApp(const OdiAIApp());
@@ -13,7 +14,8 @@ class OdiAIApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'OdiAI',
-      home: const TestConnectionScreen(),
+      debugShowCheckedModeBanner: false,
+      home: const ChatScreen(),
     );
   }
 }
