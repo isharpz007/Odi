@@ -238,14 +238,20 @@ class _ChatScreenState extends State<ChatScreen> {
         );
         if (isRetry) {
           // Replace the previous error bubble with the new one so
-          // the list doesn't stack errors on top of errors.
+          // the list doesn't stack errors on top of errors. Use `break`
+          // instead of `return` so the postFrameCallback below still
+          // fires and the list auto-scrolls after the retry settles.
+          bool replaced = false;
           for (int i = _messages.length - 1; i >= 0; i--) {
             if (_messages[i].isError) {
               _messages[i] = errBubble;
-              return;
+              replaced = true;
+              break;
             }
           }
-          _messages.add(errBubble);
+          if (!replaced) {
+            _messages.add(errBubble);
+          }
         } else {
           _messages.add(errBubble);
         }

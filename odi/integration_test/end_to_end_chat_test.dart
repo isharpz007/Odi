@@ -317,4 +317,142 @@ void main() {
     );
     expect(find.byType(LoadingBubble), findsNothing);
   });
+
+  // ──────────────────────────────────────────────────────────────────
+  // Test 6 — Long message (Task 29 DoD scenario 3)
+  // ──────────────────────────────────────────────────────────────────
+  //
+  // Sends a multi-sentence paragraph through the live backend and
+  // verifies the bubble:
+  //   - renders the full user text without overflow,
+  //   - wraps onto multiple lines,
+  //   - receives an echo that contains the user's text.
+  //
+  // We don't assert on a specific line count because line wrapping is
+  // platform-dependent; instead we assert that the text is fully
+  // present and that no RenderFlex overflow exception escaped.
+  testWidgets(
+      'e2e/6: Long message: multi-sentence paragraph wraps and gets an echo',
+      (tester) async {
+    if (!await _serverIsUp()) return;
+    await _pumpLiveChat(tester);
+
+    const String longText =
+        'This is a fairly long paragraph that contains multiple sentences '
+        'and is meant to test how the chat bubble handles wider content. '
+        'It should wrap to multiple lines inside the bubble without '
+        'breaking the surrounding layout. The bubble should grow '
+        'vertically to accommodate the wrapped text, and the rest of the '
+        'chat thread should adjust accordingly without any overflow.';
+    await _enterAndSend(tester, longText);
+
+    // User bubble visible (substring is enough — line wraps are platform-
+    // dependent and exact spacing varies by viewport).
+    expect(find.textContaining('fairly long paragraph'), findsOneWidget);
+    // Input was cleared.
+    final TextField field = tester.widget(_field());
+    expect(field.controller!.text, isEmpty);
+
+    // Wait for the AI reply.
+    await _waitForLiveReply(tester);
+
+    // Echo arrives with the long text intact.
+    expect(
+      find.textContaining('I received your message: This is a fairly long'),
+      findsOneWidget,
+    );
+
+    // No stuck loading bubble.
+    expect(find.byType(LoadingBubble), findsNothing);
+
+    // No RenderFlex overflow exception escaped. flutter_test throws if a
+    // layout exception is logged during a test; if we got here without
+    // an exception being surfaced, the bubble handled the wrap cleanly.
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // Test 7 — Rapid sending (Task 29 DoD scenario 5)
+  // ──────────────────────────────────────────────────────────────────
+  //
+  // Covers two angles of "rapid sending":
+  //
+  //   (a) Tapping the send button multiple times in quick succession
+  //       after a single user input — the input-pill disable + the
+  //       ChatScreen duplicate-send guard must collapse this to one
+  //       user bubble and one AI bubble.
+  //
+  //   (b) Typing and sending several distinct messages back-to-back —
+  //       every message lands in order, no duplicate sends, the loading
+  //       indicator clears after each reply, and the app doesn't crash.
+  //
+  // Both prove the chat holds up under rapid interaction.
+  testWidgets(
+      'e2e/7: Rapid sending: no duplicates, no stuck loading, no crash',
+      (tester) async {
+    if (!await _serverIsUp()) return;
+    await _pumpLiveChat(tester);
+
+    // ── (a) Rapid taps on a single send ─────────────────────────────
+    await tester.enterText(_field(), 'rapid-tap');
+    await tester.pump();
+    // Three back-to-back taps with only a single pump between them —
+    // the loading state must absorb all but the first tap.
+    await tester.tap(_sendButton(), warnIfMissed: false);
+    await tester.pump();
+    await tester.tap(_sendButton(), warnIfMissed: false);
+    await tester.pump();
+    await tester.tap(_sendButton(), warnIfMissed: false);
+    await tester.pump();
+
+    // Only one user bubble with this text.
+    expect(find.text('rapid-tap'), findsOneWidget);
+
+    // Drain the round-trip.
+    await _waitForLiveReply(tester);
+
+    // Exactly one echo reply (not three).
+    expect(
+      find.text('I received your message: rapid-tap'),
+      findsOneWidget,
+    );
+    expect(find.byType(LoadingBubble), findsNothing);
+
+    // ── (b) Multiple distinct messages, sent quickly ────────────────
+    const int count = 6;
+    for (int i = 0; i < count; i++) {
+      await tester.enterText(_field(), 'fast $i');
+      await tester.pump();
+      await tester.tap(_sendButton(), warnIfMissed: false);
+      // Two short pumps — not a full _waitForLiveReply. This exercises
+      // the realistic case where the user is already typing the next
+      // message while the previous one is still in flight (or just
+      // landed). We only drain fully at the end.
+      await tester.pump();
+      await tester.pump();
+    }
+
+    // Drain any remaining round-trips.
+    for (int i = 0; i < 60; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    await tester.pump();
+    await tester.idle();
+
+    // The final user bubble is visible (the list is pinned to the
+    // bottom of the conversation).
+    expect(
+      find.text('fast ${count - 1}'),
+      findsAtLeastNWidgets(1),
+      reason: 'last user bubble is visible at the bottom',
+    );
+    // The final echo landed.
+    expect(
+      find.text('I received your message: fast ${count - 1}'),
+      findsOneWidget,
+    );
+    // Loading bubble cleared — no stuck indicator.
+    expect(find.byType(LoadingBubble), findsNothing);
+    // App didn't crash — we're still in the same widget tree.
+    expect(find.byType(ChatScreen), findsOneWidget);
+  });
 }

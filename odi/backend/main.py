@@ -14,7 +14,11 @@ app = FastAPI()
 # `backend/API_DESIGN.md` §5: `{ "error": "<stable_code>", "detail": "..." }`.
 # The Flutter ApiClient parses that exact shape.
 @app.exception_handler(RequestValidationError)
-async def _validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+async def _validation_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    # FastAPI requires both `request` and `exc` in the signature even
+    # though we only read `exc`. Reference `_request` so static analysers
+    # don't flag it as unused.
+    del _request
     # Combine Pydantic's per-field error list into a single human
     # readable sentence so Flutter can show it as-is.
     parts = []
@@ -30,7 +34,12 @@ async def _validation_handler(request: Request, exc: RequestValidationError) -> 
 
 
 @app.exception_handler(Exception)
-async def _unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
+async def _unhandled_handler(_request: Request, _exc: Exception) -> JSONResponse:
+    # FastAPI requires both `request` and `exc` in the signature even
+    # though this is a blanket handler. Reference both so static
+    # analysers don't flag them as unused.
+    _ = _request
+    _ = _exc
     # Last-resort safety net so a stray bug never leaks a stack trace
     # to the client.
     return JSONResponse(
@@ -117,10 +126,9 @@ def root():
 
 @app.get("/hello")
 def hello():
-    return {"message": "kanye west is the goat!"
-                       "kanye west is the goat!"
-                       "kanye west is the goat!"
-                       "kanye west is the goat!"}
+    return {
+        "message": " ".join(["kanye west is the goat!"] * 4),
+    }
 
 
 # IMPORTANT: Task 22/23 — POST /chat. Flutter will eventually send a

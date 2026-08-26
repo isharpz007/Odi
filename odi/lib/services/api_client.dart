@@ -241,7 +241,12 @@ class ApiClient {
       case 502:
         return ApiErrorKind.aiUnavailable;
       default:
-        if (status >= 500) return ApiErrorKind.internal;
+        // IMPORTANT: any status we don't have a specific mapping for
+        // (401, 403, 404, other 4xx, unexpected 5xx) is treated as a
+        // server-side issue. Validation errors always come through with
+        // a 4xx status the contract recognises; everything else here is
+        // an unexpected server state, which is what `internal` means
+        // to the UI.
         return ApiErrorKind.internal;
     }
   }
