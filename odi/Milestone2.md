@@ -60,3 +60,50 @@ We're going to build the interface first, then make it intelligent.
 Once you've created and completed Task 11, tell me:
 
 Task 11 done.
+
+
+Task 20 — Complete Milestone 2
+
+This is your Milestone 2 checkpoint.
+
+Confirm the chat interface is complete
+┌──────────────────────────────┐
+│            OdiAI             │
+├──────────────────────────────┤
+│                              │
+│  AI message                  │
+│                              │
+│              User message    │
+│                              │
+│  AI message                  │
+│                              │
+│              User message    │
+│                              │
+│        ↕ Scrollable          │
+│                              │
+├──────────────────────────────┤
+│ Message...              ◯    │
+└──────────────────────────────┘
+
+You now have:
+
+✅ Figma-inspired interface
+✅ Message bubbles
+✅ Message input
+✅ Send button
+✅ User messages
+✅ Mock AI messages
+✅ Scrolling
+✅ Loading state
+✅ UI testing
+One final thing
+
+Commit the milestone to Git:
+
+git add .
+git commit -m "milestone: complete chat interface"
+git push
+
+Once that's pushed, mark:
+
+Task 20 done — Milestone 2 complete
