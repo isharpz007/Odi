@@ -107,3 +107,75 @@ git push
 Once that's pushed, mark:
 
 Task 20 done — Milestone 2 complete
+
+
+Task 20 — Complete Milestone 2
+
+This is another checkpoint.
+
+Your chat interface should now have:
+                 OdiAI
+                  │
+        ┌─────────▼─────────┐
+        │                   │
+        │   AI messages     │
+        │                   │
+        │        User       │
+        │      messages     │
+        │                   │
+        │   OdiAI thinking  │
+        │                   │
+        ├───────────────────┤
+        │ Message...    ➤   │
+        └───────────────────┘
+Definition of Done
+
+Confirm:
+
+ Figma design recreated
+ Message bubbles
+ Message input
+ Send button
+ User messages
+ AI mock responses
+ Scrolling
+ Loading state
+ UI testing
+Then commit your work
+
+From your project directory:
+
+git status
+
+Then:
+
+git add .
+git commit -m "milestone: complete chat interface"
+git push
+
+Once you've done that:
+
+Task 20 done — Milestone 2 complete
+
+Then we'll start Milestone 3 — Backend Integration.
+
+That's where things get more interesting:
+
+CURRENT
+Flutter
+   ↓
+Mock AI
+
+becomes:
+
+Flutter
+   ↓
+Python + FastAPI
+   ↓
+Chat API
+   ↓
+Response
+   ↓
+Flutter
+
+Still no real AI yet. We'll connect the backend properly first.
