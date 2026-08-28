@@ -4,6 +4,22 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+/// IMPORTANT: Task 38 — one prior conversation turn, sent as part of
+/// the request so the AI can answer follow-ups. Mirrors the backend's
+/// `HistoryTurn` Pydantic model exactly.
+///
+/// `role` is Flutter-idiomatic (`assistant`) rather than Gemini-idiomatic
+/// (`model`). The translation to `model` happens on the backend inside
+/// `ai._build_contents`.
+@immutable
+class HistoryTurn {
+  final String role; // 'user' | 'assistant'
+  final String text;
+  const HistoryTurn({required this.role, required this.text});
+
+  Map<String, dynamic> toJson() => {'role': role, 'text': text};
+}
+
 /// IMPORTANT: Task 24 — typed result for ApiClient.sendMessage.
 ///
 /// - On success: `reply` is the assistant text and `error` is null.
@@ -117,11 +133,27 @@ class ApiClient {
 
   /// Sends [message] to the backend and returns the assistant reply.
   ///
+  /// [history] is optional prior conversation context (Task 38). When
+  /// non-null and non-empty it is serialised into the request body so
+  /// Gemini can answer follow-ups. When null/empty the request is
+  /// single-turn — existing single-message callers keep working.
+  ///
   /// NEVER throws — network, timeout, validation, and parsing errors are
   /// captured into [ApiResult.fail]. The caller can `switch` on
   /// [ApiResult.error.kind] to decide what to show.
-  Future<ApiResult> sendMessage(String message) async {
+  Future<ApiResult> sendMessage(
+    String message, {
+    List<HistoryTurn>? history,
+  }) async {
     final Uri url = baseUrl.resolve('/chat');
+    // IMPORTANT: only include the history field when we actually have
+    // turns to send. An empty list would still serialise as `[]` and
+    // Gemini would treat it as a valid empty history; omitting the
+    // field entirely matches what single-turn clients send today.
+    final Map<String, dynamic> payload = {'message': message};
+    if (history != null && history.isNotEmpty) {
+      payload['history'] = history.map((t) => t.toJson()).toList();
+    }
     try {
       final http.Response response = await _http
           .post(
@@ -130,7 +162,7 @@ class ApiClient {
               'Content-Type': 'application/json',
               'Accept': 'application/json',
             },
-            body: jsonEncode({'message': message}),
+            body: jsonEncode(payload),
           )
           .timeout(timeout);
 
@@ -251,6 +283,119 @@ class ApiClient {
     }
   }
 
+  /// Streams the assistant reply as it is being generated.
+  ///
+  /// IMPORTANT: Task 38½ — opts into the server's `/chat/stream`
+  /// endpoint so the Flutter UI can render tokens as they arrive
+  /// instead of waiting for the full reply. The first token usually
+  /// reaches the client ~600 ms after the request; the rest stream in
+  /// at the model's generation rate.
+  ///
+  /// Yields raw text chunks. The caller (ChatScreen) concatenates them
+  /// into the AI bubble so the user sees a typewriter effect.
+  ///
+  /// Errors are surfaced as a final ApiResult.fail via the controller's
+  /// done-future. The chunk stream itself stays clean — the server
+  /// encodes mid-stream errors as `ERROR: <detail>\n` which we parse
+  /// here and convert into a typed ApiError.
+  Stream<String> sendMessageStream(
+    String message, {
+    List<HistoryTurn>? history,
+  }) {
+    final Uri url = baseUrl.resolve('/chat/stream');
+    final Map<String, dynamic> payload = {'message': message};
+    if (history != null && history.isNotEmpty) {
+      payload['history'] = history.map((t) => t.toJson()).toList();
+    }
+    final http.Request request = http.Request('POST', url)
+      ..headers['Content-Type'] = 'application/json'
+      ..headers['Accept'] = 'text/plain'
+      ..body = jsonEncode(payload);
+
+    // We return a Stream<String>. The controller listens to the
+    // underlying streaming response and forwards each decoded chunk
+    // until the stream closes or an error mid-stream is detected.
+    late StreamController<String> controller;
+    controller = StreamController<String>(
+      onListen: () async {
+        http.StreamedResponse? response;
+        try {
+          response = await _http.send(request).timeout(timeout);
+        } on TimeoutException {
+          controller.addError(
+            const ApiError(
+              ApiErrorKind.timeout,
+              'The server took too long to respond. Please try again.',
+            ),
+          );
+          await controller.close();
+          return;
+        } on http.ClientException catch (e) {
+          controller.addError(
+            ApiError(
+              ApiErrorKind.network,
+              'Could not reach the server: ${e.message}',
+            ),
+          );
+          await controller.close();
+          return;
+        } catch (e) {
+          controller.addError(
+            ApiError(ApiErrorKind.network, 'Network error: $e'),
+          );
+          await controller.close();
+          return;
+        }
+
+        // Non-2xx: convert to typed ApiError so the chat screen can
+        // show an error bubble instead of an empty AI bubble.
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          controller.addError(
+            ApiError(
+              _kindFor(response.statusCode, ''),
+              'Streaming endpoint returned HTTP ${response.statusCode}.',
+              statusCode: response.statusCode,
+            ),
+          );
+          await controller.close();
+          return;
+        }
+
+        // Read the response stream line by line. The wire format
+        // sends each text delta on its own line; a single `\n` marks
+        // end-of-stream. Mid-stream errors arrive as `ERROR: <msg>\n`.
+        try {
+          final lines = response.stream
+              .transform(const Utf8Decoder())
+              .transform(const LineSplitter());
+          await for (final line in lines) {
+            if (line.isEmpty) {
+              // End-of-stream sentinel.
+              break;
+            }
+            if (line.startsWith('ERROR: ')) {
+              controller.addError(
+                ApiError(
+                  ApiErrorKind.aiUnavailable,
+                  line.substring('ERROR: '.length).trim(),
+                ),
+              );
+              break;
+            }
+            controller.add(line);
+          }
+        } catch (e) {
+          controller.addError(
+            ApiError(ApiErrorKind.malformed, 'Stream interrupted: $e'),
+          );
+        } finally {
+          await controller.close();
+        }
+      },
+    );
+    return controller.stream;
+  }
+
   void dispose() {
     _http.close();
   }
@@ -258,9 +403,9 @@ class ApiClient {
 
 /// IMPORTANT: picks the right base URL for the current platform.
 ///
-///   - Desktop / web (local dev):  http://127.0.0.1:8000
-///   - Android emulator (local):   http://10.0.2.2:8000   ← host loopback
-///   - iOS simulator (local):      http://127.0.0.1:8000
+///   - Desktop / web (local dev):  http://127.0.0.1:8765
+///   - Android emulator (local):   http://10.0.2.2:8765   ← host loopback
+///   - iOS simulator (local):      http://127.0.0.1:8765
 ///   - Production:                 overridden via --dart-define
 ///
 /// Android emulators can't reach the host via 127.0.0.1 because that
@@ -274,7 +419,7 @@ Uri defaultBaseUrl() {
   // IMPORTANT: simple platform switch. Desktop and web point to the
   // loopback address of the dev machine. Android emulator uses 10.0.2.2.
   if (defaultTargetPlatform == TargetPlatform.android) {
-    return Uri.parse('http://10.0.2.2:8000');
+    return Uri.parse('http://10.0.2.2:8765');
   }
-  return Uri.parse('http://127.0.0.1:8000');
+  return Uri.parse('http://127.0.0.1:8765');
 }

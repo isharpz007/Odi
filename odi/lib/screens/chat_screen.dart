@@ -2,11 +2,10 @@ import 'package:flutter/material.dart';
 import '../models/chat_message.dart';
 import '../services/api_client.dart';
 import '../widgets/ai_head.dart';
-import '../widgets/ai_body.dart';
-import '../widgets/center_control.dart';
 import '../widgets/chat_input.dart';
 import '../widgets/loading_bubble.dart';
 import '../widgets/message_bubble.dart';
+
 
 class ChatScreen extends StatefulWidget {
   /// IMPORTANT: Task 24 — tests inject a fake `ApiClient` (backed by a
@@ -65,6 +64,23 @@ class _ChatScreenState extends State<ChatScreen> {
   /// text. Once the greeting lands we append it as the first AI message.
   bool _welcomeInFlight = true;
 
+  /// IMPORTANT: Task 38 — the number of history turns to *exclude* from
+  /// the next /chat request. The welcome greeting is an AI turn that
+  /// comes from the backend, not from the user, but it's still part of
+  /// the conversation context Gemini should see. We track how many
+  /// leading AI messages (welcome + any prior assistant replies) sit at
+  /// the head of the thread so we can compute the slice of messages that
+  /// actually represent user/assistant exchange *up to* the user's next
+  /// turn.
+  ///
+  /// Concretely: every prior user send produced exactly one assistant
+  /// reply (or one error). When we send the next user message, history
+  /// includes everything except the *currently-being-sent* user bubble
+  /// and any error bubbles (which aren't real assistant replies).
+  /// Cap the history at a reasonable length so we don't blow Gemini's
+  /// context window on long sessions.
+  static const int _maxHistoryTurns = 40;
+
   /// Threshold (in logical pixels) for "close enough to the bottom" to count
   /// as being at the bottom. 60px is roughly a single bubble + a little slack.
   static const double _atBottomThreshold = 60.0;
@@ -110,6 +126,31 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// IMPORTANT: Task 38 — gathers prior conversation turns for the
+  /// next /chat request. Walks the existing message list in order and
+  /// converts each non-error ChatMessage into a HistoryTurn:
+  ///
+  ///   user message       → HistoryTurn(role: 'user',      text: …)
+  ///   AI / welcome reply → HistoryTurn(role: 'assistant', text: …)
+  ///
+  /// We deliberately drop error bubbles — they're UI scaffolding, not
+  /// real assistant replies, and including them would confuse Gemini
+  /// ("assistant said: I can't reach the server right now…").
+  ///
+  /// The list is capped at [_maxHistoryTurns] (most recent turns) so
+  /// long sessions don't blow Gemini's context window.
+  List<HistoryTurn> _buildHistoryForSend() {
+    final List<HistoryTurn> turns = <HistoryTurn>[];
+    for (final ChatMessage m in _messages) {
+      if (m.isError) continue;
+      turns.add(HistoryTurn(role: m.isUser ? 'user' : 'assistant', text: m.text));
+    }
+    if (turns.length > _maxHistoryTurns) {
+      return turns.sublist(turns.length - _maxHistoryTurns);
+    }
+    return turns;
+  }
+
   @override
   void dispose() {
     _scrollController.removeListener(_onScrollChanged);
@@ -148,16 +189,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _send() {
-    final String text = _controller.text.trim();
-    if (text.isEmpty) return;
-    setState(() {
-      _messages.add(ChatMessage(text: text, isUser: true));
-      _controller.clear();
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
-  }
-
   /// Called by the chat input when the user taps Send.
   /// IMPORTANT: Task 18 — when called, this method:
   ///   1) Rejects the send if a previous request is still in-flight
@@ -192,6 +223,15 @@ class _ChatScreenState extends State<ChatScreen> {
   /// clearing the input (the input is already empty by the time we
   /// retry anyway).
   Future<void> _dispatchUserSend(String text, {required bool isRetry}) async {
+    // IMPORTANT: Task 38 — capture the history slice *before* we append
+    // the new user bubble to `_messages`. `_buildHistoryForSend` walks
+    // `_messages`, so if we ran it after the append it would include
+    // the just-sent user text in the history; the request body would
+    // then carry that turn in `history` AND repeat it as the trailing
+    // `message` field, producing a double-user-turn and breaking
+    // Gemini's strict user/model alternation.
+    final history = _buildHistoryForSend();
+
     // 1) Append the user bubble, clear the input, flip loading on.
     //    On a retry, the user bubble is already in the thread — skip
     //    the append and the input clear.
@@ -208,56 +248,110 @@ class _ChatScreenState extends State<ChatScreen> {
     //    a LoadingBubble at the end of the list because _isLoading is
     //    true. ApiClient never throws — failures are surfaced via
     //    ApiResult.fail(ApiErrorKind, ...).
-    final ApiResult result = await _api.sendMessage(text);
+    //
+    //    IMPORTANT: Task 38 — include prior conversation turns so
+    //    Gemini can answer follow-ups. Captured above before the user
+    //    bubble was appended.
+    //
+    //    IMPORTANT: Task 38½ — switch to streaming. We append an empty
+    //    AI bubble immediately and grow it as token chunks arrive, so
+    //    the user sees text appear with a typewriter effect instead of
+    //    staring at "OdiAI is thinking…" for the whole generation.
+
+    // Helper: pop the trailing error bubble if this is a retry, so we
+    // don't end up with error-on-error stacking.
+    void popTrailingError() {
+      for (int i = _messages.length - 1; i >= 0; i--) {
+        if (_messages[i].isError) {
+          _messages.removeAt(i);
+          break;
+        }
+      }
+    }
+
+    // Append an empty AI bubble we'll grow with streamed chunks.
+    final int aiBubbleIndex;
+    if (isRetry) {
+      popTrailingError();
+      final bubble = ChatMessage(text: '', isUser: false);
+      _messages.add(bubble);
+      aiBubbleIndex = _messages.length - 1;
+    } else {
+      final bubble = ChatMessage(text: '', isUser: false);
+      _messages.add(bubble);
+      aiBubbleIndex = _messages.length - 1;
+    }
+    // Drop the loading indicator now that the placeholder bubble is in
+    // place — the user can see "the AI is composing its reply" via the
+    // empty bubble that grows as tokens arrive.
+    setState(() => _isLoading = false);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+
     if (!mounted) return;
 
-    // 3) Replace the loading state with the AI reply, or surface a
-    //    transient error bubble if the request failed. On a retry we
-    //    *replace* the previous error bubble so the user doesn't see
-    //    error-on-error stacking up.
-    setState(() {
-      _isLoading = false;
-      if (result.error == null) {
-        if (isRetry) {
-          // Pop the trailing error bubble we showed last time and
-          // append the AI reply. We only ever replace the *trailing*
-          // error — older errors in history are untouched.
-          for (int i = _messages.length - 1; i >= 0; i--) {
-            if (_messages[i].isError) {
-              _messages.removeAt(i);
-              break;
-            }
-          }
-        }
-        _messages.add(ChatMessage(text: result.reply!, isUser: false));
-      } else {
-        final ChatMessage errBubble = ChatMessage(
-          text: _errorMessageFor(result.error!),
+    Object? streamError;
+    try {
+      await for (final String chunk in _api.sendMessageStream(
+        text,
+        history: history,
+      )) {
+        if (!mounted) return;
+        setState(() {
+          final cur = _messages[aiBubbleIndex];
+          _messages[aiBubbleIndex] = ChatMessage(
+            text: cur.text + chunk,
+            isUser: false,
+            id: cur.id,
+          );
+        });
+        // Keep the latest text visible while it streams in.
+        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+      }
+    } on ApiError catch (e) {
+      streamError = e;
+    } catch (e) {
+      // ApiClient streams errors through Stream.addError; in case any
+      // other exception escapes the stream, normalize to aiUnavailable.
+      streamError = ApiError(ApiErrorKind.aiUnavailable, '$e');
+    }
+
+    if (!mounted) return;
+
+    // 3) If the stream produced an error, replace the empty/partial AI
+    //    bubble with an error bubble so the user gets a clear Retry.
+    if (streamError is ApiError) {
+      setState(() {
+        _messages.removeAt(aiBubbleIndex);
+        final errBubble = ChatMessage(
+          text: _errorMessageFor(streamError as ApiError),
           isUser: false,
           isError: true,
         );
         if (isRetry) {
-          // Replace the previous error bubble with the new one so
-          // the list doesn't stack errors on top of errors. Use `break`
-          // instead of `return` so the postFrameCallback below still
-          // fires and the list auto-scrolls after the retry settles.
-          bool replaced = false;
-          for (int i = _messages.length - 1; i >= 0; i--) {
-            if (_messages[i].isError) {
-              _messages[i] = errBubble;
-              replaced = true;
-              break;
-            }
-          }
-          if (!replaced) {
-            _messages.add(errBubble);
-          }
+          // Replace the previous error bubble we already popped.
+          // (We popped before adding the streaming bubble, so just
+          // append a fresh error.)
+          _messages.add(errBubble);
         } else {
           _messages.add(errBubble);
         }
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+    } else {
+      // Empty stream with no error: surface a friendly "the AI didn't
+      // produce a reply" notice rather than showing a blank bubble.
+      if (_messages.isNotEmpty && _messages[aiBubbleIndex].text.trim().isEmpty) {
+        setState(() {
+          _messages.removeAt(aiBubbleIndex);
+          _messages.add(ChatMessage(
+            text: "I didn't get a reply. Please try again.",
+            isUser: false,
+            isError: true,
+          ));
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
       }
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+    }
   }
 
   /// IMPORTANT: Task 26 — retry handler attached to the Retry button
@@ -312,13 +406,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final screenHeight = MediaQuery.of(context).size.height;
 
     final headSize = (screenWidth * 0.22).clamp(96.0, 136.0);
-    final maxBodySize = screenWidth < 580 ? screenWidth * 0.94 : 580.0;
-    final centerBtnSize = (screenWidth * 0.12).clamp(52.0, 68.0);
     final paddingTop = (screenHeight * 0.10).clamp(48.0, 96.0);
     final paddingBottom = (screenHeight * 0.06).clamp(28.0, 56.0);
     final inputPaddingH = (screenWidth * 0.05).clamp(16.0, 28.0);
-
-    final bodyMarginTop = (-screenWidth * 0.10).clamp(-60.0, -40.0);
 
     return Scaffold(
       body: Stack(
@@ -387,48 +477,42 @@ class _ChatScreenState extends State<ChatScreen> {
                 // everything in between is given to the scrollable list, so
                 // the list always scrolls when content overflows.
                 //
-                // IMPORTANT: Task 19 — the dome's widgets (AiHeadWidget +
-                // AiBodyWidget + CenterControl) report intrinsic heights
-                // that don't always match what they paint (the body's halo
-                // and the center button overflow via clipBehavior: none).
-                // We give the dome a generous safety margin before deciding
+                // IMPORTANT: Task 19 + Task 38 cleanup — only the
+                // AiHeadWidget remains; the body "belly" and the center
+                // belly-button were removed. The head still overflows
+                // its declared bounds via clipBehavior: none (the
+                // halo + glow extend past the head circle), so we
+                // give the dome a generous safety margin before deciding
                 // to render it; otherwise we hide it entirely and let the
                 // chat area use the full vertical space.
                 //
                 // Reserve room for the input pill (~80 px on a small viewport
                 // because the TextField + send button + padding add up) and
-                // the dome's overflow slop (~80 px for the body halo +
-                // center button extending past its declared bounds).
+                // the head's halo slop (~80 px).
                 final inputReservedHeight = 80.0;
                 final domeOverflowSlop = 80.0;
                 final domeBudget = (constraints.maxHeight -
                         inputReservedHeight -
                         domeOverflowSlop)
                     .clamp(0.0, 9999.0);
-                final bodySize =
-                    (domeBudget - headSize - 56.0).clamp(0.0, maxBodySize);
 
-                // Only show the dome when there's enough room for the head,
-                // its halo, and a non-trivial body. Otherwise hide it so the
-                // chat area gets the full vertical space.
-                final bool showDome = bodySize > 32.0;
+                // Only show the head when there's enough room for it and
+                // its halo. Otherwise hide it so the chat list gets the
+                // full vertical space.
+                //
+                // IMPORTANT: Task 38 cleanup — the body "belly" and the
+                // center belly-button are gone. Only the head remains.
+                // The dome-budget check still uses the head's halo slop
+                // (the head's animation/glow can extend past its declared
+                // bounds via clipBehavior: none) so the chat list isn't
+                // pushed off-screen.
+                final bool showHead = domeBudget > headSize + 32.0;
 
                 return Column(
                   children: [
-                    // top: head + body dome at preferred size
-                    if (showDome) ...[
-                      AiHeadWidget(size: headSize),
-                      Transform.translate(
-                        offset: Offset(0, bodyMarginTop),
-                        child: AiBodyWidget(
-                          size: bodySize,
-                          child: CenterControl(
-                            size: centerBtnSize,
-                            onTap: _send,
-                          ),
-                        ),
-                      ),
-                    ],
+                    // top: head alone, centered horizontally
+                    if (showHead)
+                      Center(child: AiHeadWidget(size: headSize)),
                     // middle: message thread expands to fill remaining space.
                     // IMPORTANT: Expanded gives the list a fixed bounded
                     // viewport, which lets ListView.builder scroll properly.

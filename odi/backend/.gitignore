@@ -1,0 +1,39 @@
+# IMPORTANT: Task 33 — keep secrets and local-only artifacts out of
+# version control. This file lives inside `backend/` so the rules are
+# scoped to the Python service and stay correct even if a developer
+# ignores the repo-level `.gitignore` by accident.
+#
+# Anything added here will be excluded from `git add` and `git status`
+# inside the `backend/` directory tree.
+
+# ─── Secrets ──────────────────────────────────────────────────────────
+# The real `.env` file holds GEMINI_API_KEY (and any future secrets).
+# The `.env.example` template is the ONLY env file we commit, so
+# contributors see the contract without seeing a real key.
+.env
+.env.*
+!.env.example
+
+# ─── Python virtual environment ──────────────────────────────────────
+# The `venv/` directory is huge and OS-specific. Every developer
+# recreates it locally with `python -m venv venv`.
+venv/
+.venv/
+
+# ─── Python build artefacts ──────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ─── Editor / OS noise (defence in depth) ────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/

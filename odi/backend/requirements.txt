@@ -1,0 +1,30 @@
+# IMPORTANT: Task 32 — these are the runtime dependencies for the
+# OdiAI FastAPI backend. Install with:
+#
+#   python -m pip install -r requirements.txt
+#
+# Notes:
+# - fastapi / uvicorn / pydantic were already required by Milestone 3.
+# - google-genai is the actively-supported Google Gemini SDK. The
+#   older `google-generativeai` package is deprecated and is NOT
+#   pinned here.
+
+fastapi>=0.115,<0.142
+uvicorn>=0.30,<0.53
+pydantic>=2.7,<3
+
+# AI providers — multi-provider chain with automatic fallback.
+#
+# google-genai is the primary. The optional openai / anthropic SDKs are
+# only required if those providers are listed in ODIAI_MODEL_CHAIN with
+# their respective API keys configured. Providers whose SDK is missing
+# are skipped at startup with an INFO log so the chain stays usable
+# with whatever subset of providers the operator has installed.
+google-genai>=1.0,<3
+openai>=1.50,<2
+anthropic>=0.39,<2
+
+# Convenience: lets `ai.py` read GEMINI_API_KEY from a local .env file
+# during development. Optional in production where the env var is
+# provided by the host environment.
+python-dotenv>=1.0,<2

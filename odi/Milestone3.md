@@ -99,3 +99,8 @@ Milestone 3 Definition of Done
  Mock responses removed
  Errors handled
  End-to-end testing completed
+
+
+ //
+ GEMINI_API_KEY=your-real-key-here
+ //

@@ -26,8 +26,8 @@ We planned 7 milestones total:
 Milestone	Purpose	Status
 1	Project Setup	✅ Complete
 2	Chat Interface	✅ Complete
-3	Backend	        🟡 In progress
-4	AI Integration	⬜
-5	Voice Chatbot	⬜
+3	Backend	        ✅ Complete
+4	AI Integration	✅ Complete
+5	Voice Chatbot	🟡 In progress
 6	Testing & Reliability	⬜
 7	Finish & Release	⬜
