@@ -58,8 +58,129 @@ class _AiHeadWidgetState extends State<AiHeadWidget>
             child: child,
           );
         },
-        child: _HeadArt(size: widget.size),
+        child: _HeadTurn(
+          size: widget.size,
+          child: _HeadArt(size: widget.size),
+        ),
       ),
+    );
+  }
+}
+
+/// Wraps the head art and periodically turns it left/right, like a person
+/// glancing around, then returns to center. Uses a pseudo-3D perspective
+/// rotation (rotateY) plus a subtle tilt and horizontal drift so the motion
+/// reads as a head turn rather than a flat slide.
+class _HeadTurn extends StatefulWidget {
+  final double size;
+  final Widget child;
+  const _HeadTurn({required this.size, required this.child});
+
+  @override
+  State<_HeadTurn> createState() => _HeadTurnState();
+}
+
+class _HeadTurnState extends State<_HeadTurn>
+    with SingleTickerProviderStateMixin {
+  // -1.0 (full left) .. 0.0 (center) .. 1.0 (full right)
+  late final AnimationController _controller;
+  final Random _rng = Random();
+  bool _disposed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      lowerBound: -1.0,
+      upperBound: 1.0,
+      value: 0.0,
+    );
+    _runLoop();
+  }
+
+  Future<void> _wait(int ms) async {
+    if (_disposed) return;
+    await Future.delayed(Duration(milliseconds: ms));
+  }
+
+  Future<void> _turnTo(
+    double target, {
+    required int ms,
+    Curve curve = Curves.easeInOut,
+  }) async {
+    if (_disposed) return;
+    try {
+      await _controller.animateTo(
+        target,
+        duration: Duration(milliseconds: ms),
+        curve: curve,
+      );
+    } catch (_) {
+      // Controller was disposed mid-animation; ignore.
+    }
+  }
+
+  Future<void> _runLoop() async {
+    while (!_disposed) {
+      // Rest roughly centered for a while before the next glance.
+      await _wait(1800 + _rng.nextInt(3200)); // 1.8s - 5.0s
+      if (_disposed) return;
+
+      // Pick a side and how far to turn.
+      final double magnitude = 0.45 + _rng.nextDouble() * 0.55; // 0.45..1.0
+      final double target = (_rng.nextBool() ? 1.0 : -1.0) * magnitude;
+      await _turnTo(target, ms: 500 + _rng.nextInt(450));
+      if (_disposed) return;
+
+      // Hold the gaze briefly, like actually looking at something.
+      await _wait(400 + _rng.nextInt(900));
+      if (_disposed) return;
+
+      // Occasionally glance the other way before coming back.
+      if (_rng.nextDouble() < 0.3) {
+        final double other =
+            -target.sign * (0.45 + _rng.nextDouble() * 0.55);
+        await _turnTo(other, ms: 450 + _rng.nextInt(400));
+        if (_disposed) return;
+        await _wait(300 + _rng.nextInt(700));
+        if (_disposed) return;
+      }
+
+      // Return to center.
+      await _turnTo(0.0, ms: 500 + _rng.nextInt(500),
+          curve: Curves.easeInOutCubic);
+    }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final double t = _controller.value; // -1..1
+        const double maxAngle = 0.42; // ~24 degrees of "turn"
+        const double maxTilt = 0.05; // subtle tilt into the turn
+        final double dx = t * (widget.size * 0.035);
+        final matrix = Matrix4.identity()
+          ..setEntry(3, 2, 0.0016) // perspective
+          ..translate(dx)
+          ..rotateY(t * maxAngle)
+          ..rotateZ(t * maxTilt);
+        return Transform(
+          alignment: Alignment.center,
+          transform: matrix,
+          child: child,
+        );
+      },
+      child: widget.child,
     );
   }
 }
